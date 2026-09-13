@@ -1,3 +1,282 @@
+import React, { useState, useEffect, useMemo } from "react";
+import { io } from "socket.io-client";
+import * as THREE from "three";
+import ThreeChatRoom from "../components/ThreeChatRoom";
+
+const socket = io("https://spcaechat-server.onrender.com");
+
+// Global object to track mobile on-screen D-Pad presses
+window.mobileKeys = { KeyW: false, KeyS: false, KeyA: false, KeyD: false };
+
+function Chat() {
+  const [username, setUsername] = useState(() => localStorage.getItem("chat_username") || "");
+  const [joined, setJoined] = useState(() => !!localStorage.getItem("chat_username"));
+  const [receiver, setReceiver] = useState("");
+  const [message, setMessage] = useState("");
+  const [messages, setMessages] = useState(() => {
+    const saved = localStorage.getItem("chat_messages");
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [onlineUsers, setOnlineUsers] = useState([]);
+  const [playerPosition, setPlayerPosition] = useState(new THREE.Vector3(0, 0, 10));
+  
+  // Responsive State
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768);
+  const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth >= 768);
+
+  useEffect(() => {
+    const handleResize = () => {
+      const mobile = window.innerWidth < 768;
+      setIsMobile(mobile);
+      if (!mobile) setSidebarOpen(true);
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  useEffect(() => {
+    if (messages.length > 0) localStorage.setItem("chat_messages", JSON.stringify(messages));
+  }, [messages]);
+
+  useEffect(() => {
+    const savedUser = localStorage.getItem("chat_username");
+    const handleConnect = () => savedUser && socket.emit("join", savedUser);
+    if (socket.connected) handleConnect();
+    socket.on("connect", handleConnect);
+    return () => socket.off("connect", handleConnect);
+  }, []);
+
+  const chatCores = useMemo(() => {
+    const cores = [{ id: "global", pos: [0, 0, 0] }];
+    if (Array.isArray(onlineUsers)) {
+      onlineUsers.filter(u => u !== username).forEach((user, i) => {
+        const id = [username, user].sort().join("-");
+        cores.push({ id, pos: [(i + 1) * 50, 0, (i + 1) * 30] });
+      });
+    }
+    return cores;
+  }, [onlineUsers, username]);
+
+  useEffect(() => {
+    socket.on("receive_private_message", (data) => setMessages(prev => [...prev, data]));
+    socket.on("receive_group_message", (data) => setMessages(prev => [...prev, data]));
+    socket.on("online_users", (users) => setOnlineUsers(Array.isArray(users) ? users : []));
+    return () => {
+      socket.off("receive_private_message");
+      socket.off("receive_group_message");
+      socket.off("online_users");
+    };
+  }, []);
+
+  const joinChat = () => {
+    if (!username.trim()) return alert("Identity required.");
+    localStorage.setItem("chat_username", username.trim());
+    socket.emit("join", username.trim());
+    setJoined(true);
+  };
+
+  const logout = () => {
+    localStorage.removeItem("chat_username");
+    localStorage.removeItem("chat_messages");
+    setJoined(false);
+    setUsername("");
+    setReceiver("");
+    setMessages([]);
+    window.location.reload();
+  };
+
+  const sendMessage = (type) => {
+    if (!message.trim()) return;
+    if (type === "private" && !receiver) return alert("Select a node first!");
+    const data = { sender: username, receiver: type === "private" ? receiver : null, message, type };
+    socket.emit(type === "private" ? "private_message" : "group_message", data);
+    setMessages(prev => [...prev, data]);
+    setMessage("");
+  };
+
+  const handleMobileKey = (key, isDown) => {
+    window.mobileKeys[key] = isDown;
+  };
+
+  if (!joined) {
+    return (
+      <div style={styles.loginPage}>
+        <div style={styles.loginBox}>
+          <h1 style={styles.glitchText}>SOLAR_NET_v2</h1>
+          <p style={styles.loginSub}>NEURAL_LINK_PENDING...</p>
+          <input 
+            style={styles.loginInput} placeholder="ENTER_USER_ID" 
+            value={username} onChange={(e) => setUsername(e.target.value)} 
+            onKeyDown={(e) => e.key === "Enter" && joinChat()} 
+          />
+          <button style={styles.loginBtn} onClick={joinChat}>INITIALIZE</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.container}>
+      {/* SIDEBAR (Collapsible on Mobile) */}
+      <div style={{...styles.sidebar, 
+        transform: sidebarOpen ? "translateX(0)" : "translateX(-100%)",
+        position: isMobile ? "absolute" : "relative",
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: "20px" }}>
+          <div style={styles.sidebarHeader}>ACTIVE_NODES</div>
+          <button onClick={logout} style={styles.logoutBtn}>LOGOUT</button>
+        </div>
+        
+        <div style={styles.userList}>
+          {onlineUsers.filter(u => u !== username).map((u, i) => (
+            <div key={i} onClick={() => { setReceiver(u); if(isMobile) setSidebarOpen(false); }} 
+              style={{
+                ...styles.nodeItem, 
+                color: receiver === u ? "#00f2ff" : "#64748b", 
+                background: receiver === u ? "rgba(0,242,255,0.1)" : "transparent",
+                borderRight: receiver === u ? "2px solid #00f2ff" : "none"
+              }}>
+              <span style={{...styles.dot, backgroundColor: receiver === u ? "#00f2ff" : "#1e293b"}} /> 
+              {u.toUpperCase()}
+            </div>
+          ))}
+        </div>
+        
+        <div style={styles.radarContainer}>
+          <div style={styles.radarTitle}>TACTICAL_MAP</div>
+          <div style={styles.radarMap}>
+            <div style={styles.radarGrid} />
+            {chatCores.map(core => (
+              <div key={core.id} style={{
+                position: 'absolute', left: `${50 + (core.pos[0] / 6)}%`, top: `${50 + (core.pos[2] / 6)}%`,
+                width: '6px', height: '6px', background: core.id === 'global' ? '#ffaa00' : '#00f2ff',
+                borderRadius: '50%', boxShadow: core.id === 'global' ? '0 0 8px #ffaa00' : '0 0 8px #00f2ff', transform: 'translate(-50%, -50%)', zIndex: 2
+              }} />
+            ))}
+            <div style={{
+              position: 'absolute', left: `${50 + (playerPosition.x / 6)}%`, top: `${50 + (playerPosition.z / 6)}%`,
+              width: '8px', height: '8px', background: '#ff0000', borderRadius: '50%', boxShadow: '0 0 10px #ff0000',
+              border: '1px solid white', transform: 'translate(-50%, -50%)', zIndex: 3, transition: 'all 0.1s linear'
+            }} />
+          </div>
+        </div>
+      </div>
+
+      {/* MAIN VIEWPORT */}
+      <div style={styles.viewport}>
+        <div style={styles.topBar}>
+          {isMobile && (
+            <button onClick={() => setSidebarOpen(!sidebarOpen)} style={styles.menuBtn}>
+              {sidebarOpen ? '✖' : '☰'}
+            </button>
+          )}
+          <div style={styles.logoText}>
+            VIRTUAL_UNIT // <span style={{color: '#00f2ff'}}>{username.toUpperCase()}</span>
+          </div>
+          {receiver && (
+            <div style={styles.targetStatus}>
+              LINK: <span style={{color: '#00f2ff'}}>{receiver.toUpperCase()}</span>
+              <button onClick={() => setReceiver("")} style={styles.clearReceiverBtn}>[X]</button>
+            </div>
+          )}
+        </div>
+
+        <div style={styles.canvasWrapper}>
+          <ThreeChatRoom 
+            messages={messages} currentUser={username} onlineUsers={onlineUsers}
+            onPlayerMove={(pos) => setPlayerPosition(pos.clone())} isMobile={isMobile}
+          />
+        </div>
+
+        {/* MOBILE D-PAD OVERLAY */}
+        {isMobile && (
+          <div style={styles.mobileControls}>
+            <div style={styles.dpadRow}>
+              <button 
+                onPointerDown={() => handleMobileKey("KeyW", true)} 
+                onPointerUp={() => handleMobileKey("KeyW", false)} 
+                style={styles.dpadBtn}>W</button>
+            </div>
+            <div style={styles.dpadRow}>
+              <button 
+                onPointerDown={() => handleMobileKey("KeyA", true)} 
+                onPointerUp={() => handleMobileKey("KeyA", false)} 
+                style={styles.dpadBtn}>A</button>
+              <button 
+                onPointerDown={() => handleMobileKey("KeyS", true)} 
+                onPointerUp={() => handleMobileKey("KeyS", false)} 
+                style={styles.dpadBtn}>S</button>
+              <button 
+                onPointerDown={() => handleMobileKey("KeyD", true)} 
+                onPointerUp={() => handleMobileKey("KeyD", false)} 
+                style={styles.dpadBtn}>D</button>
+            </div>
+          </div>
+        )}
+
+        <div style={styles.inputArea}>
+          <div style={{...styles.inputWrapper, flexDirection: isMobile ? "column" : "row", gap: "10px", padding: isMobile ? "10px" : "10px 30px"}}>
+            <input 
+              style={styles.mainInput} 
+              placeholder={receiver ? `Send to ${receiver}...` : "Broadcast..."} 
+              value={message} onChange={(e) => setMessage(e.target.value)} 
+              onKeyDown={(e) => e.key === "Enter" && sendMessage(receiver ? "private" : "group")} 
+            />
+            <div style={{...styles.actionGroup, width: isMobile ? "100%" : "auto", marginLeft: isMobile ? 0 : "20px"}}>
+              <button onClick={() => sendMessage("group")} style={{...styles.btnAction, background: "#ff007a", flex: isMobile ? 1 : "auto"}}>GROUP</button>
+              <button onClick={() => sendMessage("private")} style={{...styles.btnAction, background: "#00f2ff", color: "black", flex: isMobile ? 1 : "auto"}}>PRIVATE</button>
+            </div>
+          </div>
+        </div>
+
+        {!isMobile && <div style={styles.controlsHint}>CLICK TO LOCK MOUSE | WASD TO NAVIGATE</div>}
+      </div>
+    </div>
+  );
+}
+
+const styles = {
+  container: { display: "flex", width: "100vw", height: "100vh", background: "#000", overflow: "hidden", fontFamily: "'Courier New', monospace" },
+  sidebar: { width: "260px", height: "100%", background: "#020617", borderRight: "1px solid #1e293b", padding: "20px", zIndex: 100, display: 'flex', flexDirection: 'column', transition: 'transform 0.3s ease' },
+  sidebarHeader: { fontSize: "12px", color: "#475569", letterSpacing: "4px", fontWeight: "bold" },
+  logoutBtn: { background: "transparent", border: "1px solid #ff007a", color: "#ff007a", fontSize: "9px", padding: "4px 8px", cursor: "pointer", borderRadius: "4px" },
+  userList: { flex: 1, overflowY: 'auto' },
+  nodeItem: { padding: "14px 15px", cursor: "pointer", fontSize: "13px", display: "flex", alignItems: "center", transition: "0.3s", marginBottom: "4px", borderRadius: "4px" },
+  dot: { width: "8px", height: "8px", borderRadius: "50%", marginRight: "12px" },
+  radarContainer: { marginTop: '20px', paddingTop: '20px', borderTop: '1px solid #1e293b' },
+  radarTitle: { fontSize: "10px", color: "#475569", marginBottom: "15px", textAlign: 'center', letterSpacing: '2px' },
+  radarMap: { position: 'relative', width: '100%', height: '150px', background: '#010409', borderRadius: '12px', border: '1px solid #1e293b', overflow: 'hidden' },
+  radarGrid: { position: 'absolute', width: '100%', height: '100%', backgroundImage: 'linear-gradient(#1e293b 1px, transparent 1px), linear-gradient(90deg, #1e293b 1px, transparent 1px)', backgroundSize: '20px 20px', opacity: 0.2 },
+  viewport: { flex: 1, position: "relative", background: "#000" },
+  canvasWrapper: { position: "absolute", top: 0, left: 0, width: "100%", height: "100%", zIndex: 1, touchAction: "none" },
+  topBar: { position: "absolute", top: 20, left: 20, zIndex: 10, display: "flex", gap: "15px", alignItems: "center" },
+  menuBtn: { background: "#0f172a", border: "1px solid #00f2ff", color: "#00f2ff", padding: "8px 12px", borderRadius: "8px", fontSize: "18px", cursor: "pointer" },
+  logoText: { color: "white", fontSize: "16px", fontWeight: "bold", textShadow: "0 0 10px rgba(0,242,255,0.5)" },
+  targetStatus: { color: "#ff007a", fontSize: "11px", letterSpacing: "1px", display: "flex", alignItems: "center", gap: "8px" },
+  clearReceiverBtn: { background: "none", border: "none", color: "#ff007a", cursor: "pointer", fontWeight: "bold" },
+  inputArea: { position: "absolute", bottom: 20, width: "100%", display: "flex", justifyContent: "center", zIndex: 100 },
+  inputWrapper: { width: "90%", maxWidth: "900px", background: "rgba(15, 23, 42, 0.9)", backdropFilter: "blur(20px)", borderRadius: "20px", border: "1px solid rgba(0,242,255,0.3)", display: "flex", alignItems: "center", boxShadow: "0 20px 50px rgba(0,0,0,0.9)" },
+  mainInput: { width: "100%", background: "transparent", border: "none", color: "white", outline: "none", fontSize: "15px", padding: "10px" },
+  actionGroup: { display: "flex", gap: "10px" },
+  btnAction: { border: "none", padding: "12px", borderRadius: "10px", cursor: "pointer", fontWeight: "bold", fontSize: "12px" },
+  mobileControls: { position: "absolute", bottom: "120px", left: "20px", zIndex: 50, display: "flex", flexDirection: "column", gap: "5px", opacity: 0.7 },
+  dpadRow: { display: "flex", justifyContent: "center", gap: "5px" },
+  dpadBtn: { width: "45px", height: "45px", background: "rgba(15, 23, 42, 0.8)", border: "1px solid #00f2ff", color: "#00f2ff", borderRadius: "8px", fontSize: "16px", fontWeight: "bold", userSelect: "none" },
+  controlsHint: { position: 'absolute', top: 20, right: 20, color: 'rgba(255,255,255,0.3)', fontSize: '10px', zIndex: 10 },
+  loginPage: { height: "100vh", width: "100vw", display: "flex", justifyContent: "center", alignItems: "center", background: "#010208" },
+  loginBox: { textAlign: "center", padding: "40px", background: "#0f172a", borderRadius: "32px", border: "1px solid #1e293b" },
+  glitchText: { color: "#00f2ff", fontSize: "28px", letterSpacing: "5px", marginBottom: "10px", textShadow: "0 0 20px #00f2ff" },
+  loginSub: { color: '#475569', fontSize: '11px', letterSpacing: '3px', marginBottom: '30px' },
+  loginInput: { padding: "15px", width: "100%", maxWidth: "300px", background: "#020617", border: "1px solid #1e293b", color: "#00f2ff", marginBottom: "20px", borderRadius: "12px", outline: "none", textAlign: "center", fontSize: "16px" },
+  loginBtn: { width: "100%", padding: "15px", background: "#00f2ff", border: "none", fontWeight: "bold", cursor: "pointer", borderRadius: "12px", fontSize: "16px" }
+};
+
+export default Chat;
+
+
+
+
+
 // import React, { useState, useEffect, useMemo } from "react"; // Added useMemo
 // import { io } from "socket.io-client";
 // import ThreeChatRoom from "../components/ThreeChatRoom";
@@ -145,271 +424,283 @@
 //   loginBtn: { width: "100%", padding: "15px", background: "#00f2ff", border: "none", fontWeight: "bold", cursor: "pointer", borderRadius: "8px" }
 // };
 
+
+
+
+
+
+
+
+
+
+
+
+
+// // export default Chat;
+// import React, { useState, useEffect, useMemo } from "react";
+// import { io } from "socket.io-client";
+// import * as THREE from "three";
+// import ThreeChatRoom from "../components/ThreeChatRoom";
+
+// const socket = io("https://spcaechat-server.onrender.com");
+
+// function Chat() {
+//   // 1. Initialize username from localStorage
+//   const [username, setUsername] = useState(() => localStorage.getItem("chat_username") || "");
+//   const [joined, setJoined] = useState(() => !!localStorage.getItem("chat_username"));
+//   const [receiver, setReceiver] = useState("");
+//   const [message, setMessage] = useState("");
+  
+//   // 2. Initialize messages from localStorage so they don't disappear on reload
+//   const [messages, setMessages] = useState(() => {
+//     const savedMessages = localStorage.getItem("chat_messages");
+//     return savedMessages ? JSON.parse(savedMessages) : [];
+//   });
+//   const [onlineUsers, setOnlineUsers] = useState([]);
+  
+//   const [playerPosition, setPlayerPosition] = useState(new THREE.Vector3(0, 0, 10));
+
+//   // --- SAVE MESSAGES ON CHANGE ---
+//   useEffect(() => {
+//     if (messages.length > 0) {
+//       localStorage.setItem("chat_messages", JSON.stringify(messages));
+//     }
+//   }, [messages]);
+
+//   // --- AUTO RE-JOIN ON CONNECTION ---
+//   useEffect(() => {
+//     const savedUser = localStorage.getItem("chat_username");
+    
+//     // Function to re-register user once socket is securely connected
+//     const handleConnect = () => {
+//       if (savedUser) {
+//         socket.emit("join", savedUser);
+//       }
+//     };
+
+//     // If socket is already connected when component mounts
+//     if (socket.connected) {
+//       handleConnect();
+//     }
+
+//     // Listen for connection events (handles initial connect and reconnections)
+//     socket.on("connect", handleConnect);
+
+//     return () => {
+//       socket.off("connect", handleConnect);
+//     };
+//   }, []);
+
+//   // --- CORE POSITION LOGIC ---
+//   const chatCores = useMemo(() => {
+//     const cores = [{ id: "global", pos: [0, 0, 0] }];
+//     if (Array.isArray(onlineUsers)) {
+//       onlineUsers.filter(u => u !== username).forEach((user, i) => {
+//         const id = [username, user].sort().join("-");
+//         cores.push({ id, pos: [(i + 1) * 50, 0, (i + 1) * 30] });
+//       });
+//     }
+//     return cores;
+//   }, [onlineUsers, username]);
+
+//   useEffect(() => {
+//     socket.on("receive_private_message", (data) => setMessages((prev) => [...prev, data]));
+//     socket.on("receive_group_message", (data) => setMessages((prev) => [...prev, data]));
+//     socket.on("online_users", (users) => setOnlineUsers(Array.isArray(users) ? users : []));
+    
+//     return () => {
+//       socket.off("receive_private_message");
+//       socket.off("receive_group_message");
+//       socket.off("online_users");
+//     };
+//   }, []);
+
+//   const joinChat = () => {
+//     if (!username.trim()) return alert("Identity required.");
+//     localStorage.setItem("chat_username", username.trim());
+//     socket.emit("join", username.trim());
+//     setJoined(true);
+//   };
+
+//   const logout = () => {
+//     localStorage.removeItem("chat_username");
+//     localStorage.removeItem("chat_messages"); // Clear chats on logout
+//     setJoined(false);
+//     setUsername("");
+//     setReceiver("");
+//     setMessages([]);
+//     window.location.reload();
+//   };
+
+//   const sendMessage = (type) => {
+//     if (!message.trim()) return;
+//     const data = { sender: username, receiver: type === "private" ? receiver : null, message, type };
+//     if (type === "private" && !receiver) return alert("Select a node first!");
+//     socket.emit(type === "private" ? "private_message" : "group_message", data);
+//     setMessages((prev) => [...prev, data]);
+//     setMessage("");
+//   };
+
+
+//   if (!joined) {
+//     return (
+//       <div style={styles.loginPage}>
+//         <div style={styles.loginBox}>
+//           <h1 style={styles.glitchText}>SOLAR_NET_v2</h1>
+//           <p style={styles.loginSub}>NEURAL_LINK_PENDING...</p>
+//           <input 
+//             style={styles.loginInput} 
+//             placeholder="ENTER_USER_ID" 
+//             value={username} 
+//             onChange={(e) => setUsername(e.target.value)} 
+//             onKeyDown={(e) => e.key === "Enter" && joinChat()} 
+//           />
+//           <button style={styles.loginBtn} onClick={joinChat}>INITIALIZE</button>
+//         </div>
+//       </div>
+//     );
+//   }
+
+//   return (
+//     <div style={styles.container}>
+//       {/* LEFT SIDEBAR */}
+//       <div style={styles.sidebar}>
+//         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: "20px" }}>
+//           <div style={styles.sidebarHeader}>ACTIVE_NODES</div>
+//           <button onClick={logout} style={styles.logoutBtn} title="Disconnect Session">LOGOUT</button>
+//         </div>
+        
+//         <div style={styles.userList}>
+//           {onlineUsers.filter(u => u !== username).map((u, i) => (
+//             <div 
+//               key={i} 
+//               onClick={() => setReceiver(u)} 
+//               style={{
+//                 ...styles.nodeItem, 
+//                 color: receiver === u ? "#00f2ff" : "#64748b", 
+//                 background: receiver === u ? "rgba(0,242,255,0.1)" : "transparent",
+//                 borderRight: receiver === u ? "2px solid #00f2ff" : "none"
+//               }}
+//             >
+//               <span style={{...styles.dot, backgroundColor: receiver === u ? "#00f2ff" : "#1e293b"}} /> 
+//               {u.toUpperCase()}
+//             </div>
+//           ))}
+//         </div>
+        
+//         {/* --- DYNAMIC RADAR UI --- */}
+//         <div style={styles.radarContainer}>
+//           <div style={styles.radarTitle}>TACTICAL_MAP</div>
+//           <div style={styles.radarMap}>
+//             <div style={styles.radarGrid} />
+//             {chatCores.map(core => (
+//               <div key={core.id} title={core.id} style={{
+//                 position: 'absolute',
+//                 left: `${50 + (core.pos[0] / 6)}%`, 
+//                 top: `${50 + (core.pos[2] / 6)}%`,
+//                 width: '6px', height: '6px',
+//                 background: core.id === 'global' ? '#ffaa00' : '#00f2ff',
+//                 borderRadius: '50%',
+//                 boxShadow: core.id === 'global' ? '0 0 8px #ffaa00' : '0 0 8px #00f2ff',
+//                 transform: 'translate(-50%, -50%)',
+//                 zIndex: 2
+//               }} />
+//             ))}
+//             <div style={{
+//               position: 'absolute',
+//               left: `${50 + (playerPosition.x / 6)}%`,
+//               top: `${50 + (playerPosition.z / 6)}%`,
+//               width: '8px', height: '8px',
+//               background: '#ff0000',
+//               borderRadius: '50%',
+//               boxShadow: '0 0 10px #ff0000',
+//               border: '1px solid white',
+//               transform: 'translate(-50%, -50%)',
+//               zIndex: 3,
+//               transition: 'all 0.1s linear'
+//             }} />
+//           </div>
+//         </div>
+//       </div>
+
+//       {/* MAIN VIEWPORT */}
+//       <div style={styles.viewport}>
+//         <div style={styles.topBar}>
+//           <div style={styles.logoText}>
+//             VIRTUAL_UNIT // <span style={{color: '#00f2ff'}}>{username.toUpperCase()}</span>
+//           </div>
+//           {receiver && (
+//             <div style={styles.targetStatus}>
+//               SECURE_LINK_ACTIVE: <span style={{color: '#00f2ff'}}>{receiver.toUpperCase()}</span>
+//               <button onClick={() => setReceiver("")} style={styles.clearReceiverBtn}>[X]</button>
+//             </div>
+//           )}
+//         </div>
+
+//         <div style={styles.canvasWrapper}>
+//           <ThreeChatRoom 
+//             messages={messages} 
+//             currentUser={username} 
+//             onlineUsers={onlineUsers}
+//             onPlayerMove={(pos) => setPlayerPosition(pos.clone())}
+//             onSelectUser={(targetUser) => setReceiver(targetUser)}
+//           />
+//         </div>
+
+//         <div style={styles.inputArea}>
+//           <div style={styles.inputWrapper}>
+//             <input 
+//               style={styles.mainInput} 
+//               placeholder={receiver ? `Send signal to ${receiver}...` : "Broadcast to Global Core..."} 
+//               value={message} 
+//               onChange={(e) => setMessage(e.target.value)} 
+//               onKeyDown={(e) => e.key === "Enter" && sendMessage(receiver ? "private" : "group")} 
+//             />
+//             <div style={styles.actionGroup}>
+//               <button onClick={() => sendMessage("group")} style={{...styles.btnAction, background: "#ff007a"}}>GROUP</button>
+//               <button onClick={() => sendMessage("private")} style={{...styles.btnAction, background: "#00f2ff", color: "black"}}>PRIVATE</button>
+//             </div>
+//           </div>
+//         </div>
+
+//         <div style={styles.controlsHint}>
+//           CLICK TO LOCK MOUSE | WASD TO NAVIGATE
+//         </div>
+//       </div>
+//     </div>
+//   );
+// }
+
+// const styles = {
+//   container: { display: "flex", width: "100vw", height: "100vh", background: "#000", overflow: "hidden", fontFamily: "'Courier New', monospace" },
+//   sidebar: { width: "260px", background: "#020617", borderRight: "1px solid #1e293b", padding: "20px", zIndex: 100, display: 'flex', flexDirection: 'column' },
+//   sidebarHeader: { fontSize: "12px", color: "#475569", letterSpacing: "4px", fontWeight: "bold" },
+//   logoutBtn: { background: "transparent", border: "1px solid #ff007a", color: "#ff007a", fontSize: "9px", padding: "4px 8px", cursor: "pointer", borderRadius: "4px" },
+//   userList: { flex: 1, overflowY: 'auto' },
+//   nodeItem: { padding: "14px 15px", cursor: "pointer", fontSize: "13px", display: "flex", alignItems: "center", transition: "0.3s", marginBottom: "4px", borderRadius: "4px" },
+//   dot: { width: "8px", height: "8px", borderRadius: "50%", marginRight: "12px" },
+//   radarContainer: { marginTop: '20px', paddingTop: '20px', borderTop: '1px solid #1e293b' },
+//   radarTitle: { fontSize: "10px", color: "#475569", marginBottom: "15px", textAlign: 'center', letterSpacing: '2px' },
+//   radarMap: { position: 'relative', width: '100%', height: '180px', background: '#010409', borderRadius: '12px', border: '1px solid #1e293b', overflow: 'hidden', boxShadow: 'inset 0 0 20px rgba(0,0,0,0.8)' },
+//   radarGrid: { position: 'absolute', width: '100%', height: '100%', backgroundImage: 'linear-gradient(#1e293b 1px, transparent 1px), linear-gradient(90deg, #1e293b 1px, transparent 1px)', backgroundSize: '20px 20px', opacity: 0.2 },
+//   viewport: { flex: 1, position: "relative", background: "#000" },
+//   canvasWrapper: { position: "absolute", top: 0, left: 0, width: "100%", height: "100%", zIndex: 1 },
+//   topBar: { position: "absolute", top: 30, left: 30, zIndex: 10, pointerEvents: "none" },
+//   logoText: { color: "white", fontSize: "18px", fontWeight: "bold", textShadow: "0 0 10px rgba(0,242,255,0.5)" },
+//   targetStatus: { marginTop: "10px", color: "#ff007a", fontSize: "11px", letterSpacing: "1px", pointerEvents: "auto", display: "flex", alignItems: "center", gap: "8px" },
+//   clearReceiverBtn: { background: "none", border: "none", color: "#ff007a", cursor: "pointer", fontWeight: "bold" },
+//   inputArea: { position: "absolute", bottom: 40, width: "100%", display: "flex", justifyContent: "center", zIndex: 100 },
+//   inputWrapper: { width: "75%", maxWidth: "900px", background: "rgba(15, 23, 42, 0.9)", backdropFilter: "blur(20px)", padding: "10px 30px", borderRadius: "100px", border: "1px solid rgba(0,242,255,0.3)", display: "flex", alignItems: "center", boxShadow: "0 20px 50px rgba(0,0,0,0.9)" },
+//   mainInput: { flex: 1, background: "transparent", border: "none", color: "white", outline: "none", fontSize: "15px" },
+//   actionGroup: { display: "flex", gap: "12px", marginLeft: "20px" },
+//   btnAction: { border: "none", padding: "12px 24px", borderRadius: "50px", cursor: "pointer", fontWeight: "bold", fontSize: "12px", transition: "0.2s" },
+//   controlsHint: { position: 'absolute', top: 30, right: 30, color: 'rgba(255,255,255,0.3)', fontSize: '10px', zIndex: 10 },
+//   loginPage: { height: "100vh", width: "100vw", display: "flex", justifyContent: "center", alignItems: "center", background: "#010208" },
+//   loginBox: { textAlign: "center", padding: "60px", background: "#0f172a", borderRadius: "32px", border: "1px solid #1e293b", boxShadow: "0 0 60px rgba(0,242,255,0.15)" },
+//   glitchText: { color: "#00f2ff", fontSize: "32px", letterSpacing: "10px", marginBottom: "10px", textShadow: "0 0 20px #00f2ff" },
+//   loginSub: { color: '#475569', fontSize: '11px', letterSpacing: '3px', marginBottom: '30px' },
+//   loginInput: { padding: "18px", width: "320px", background: "#020617", border: "1px solid #1e293b", color: "#00f2ff", marginBottom: "30px", borderRadius: "12px", outline: "none", textAlign: "center", fontSize: "18px" },
+//   loginBtn: { width: "100%", padding: "18px", background: "#00f2ff", border: "none", fontWeight: "bold", cursor: "pointer", borderRadius: "12px", fontSize: "16px", letterSpacing: "2px" }
+// };
+
 // export default Chat;
-import React, { useState, useEffect, useMemo } from "react";
-import { io } from "socket.io-client";
-import * as THREE from "three";
-import ThreeChatRoom from "../components/ThreeChatRoom";
-
-const socket = io("https://spcaechat-server.onrender.com");
-
-function Chat() {
-  // 1. Initialize username from localStorage
-  const [username, setUsername] = useState(() => localStorage.getItem("chat_username") || "");
-  const [joined, setJoined] = useState(() => !!localStorage.getItem("chat_username"));
-  const [receiver, setReceiver] = useState("");
-  const [message, setMessage] = useState("");
-  
-  // 2. Initialize messages from localStorage so they don't disappear on reload
-  const [messages, setMessages] = useState(() => {
-    const savedMessages = localStorage.getItem("chat_messages");
-    return savedMessages ? JSON.parse(savedMessages) : [];
-  });
-  const [onlineUsers, setOnlineUsers] = useState([]);
-  
-  const [playerPosition, setPlayerPosition] = useState(new THREE.Vector3(0, 0, 10));
-
-  // --- SAVE MESSAGES ON CHANGE ---
-  useEffect(() => {
-    if (messages.length > 0) {
-      localStorage.setItem("chat_messages", JSON.stringify(messages));
-    }
-  }, [messages]);
-
-  // --- AUTO RE-JOIN ON CONNECTION ---
-  useEffect(() => {
-    const savedUser = localStorage.getItem("chat_username");
-    
-    // Function to re-register user once socket is securely connected
-    const handleConnect = () => {
-      if (savedUser) {
-        socket.emit("join", savedUser);
-      }
-    };
-
-    // If socket is already connected when component mounts
-    if (socket.connected) {
-      handleConnect();
-    }
-
-    // Listen for connection events (handles initial connect and reconnections)
-    socket.on("connect", handleConnect);
-
-    return () => {
-      socket.off("connect", handleConnect);
-    };
-  }, []);
-
-  // --- CORE POSITION LOGIC ---
-  const chatCores = useMemo(() => {
-    const cores = [{ id: "global", pos: [0, 0, 0] }];
-    if (Array.isArray(onlineUsers)) {
-      onlineUsers.filter(u => u !== username).forEach((user, i) => {
-        const id = [username, user].sort().join("-");
-        cores.push({ id, pos: [(i + 1) * 50, 0, (i + 1) * 30] });
-      });
-    }
-    return cores;
-  }, [onlineUsers, username]);
-
-  useEffect(() => {
-    socket.on("receive_private_message", (data) => setMessages((prev) => [...prev, data]));
-    socket.on("receive_group_message", (data) => setMessages((prev) => [...prev, data]));
-    socket.on("online_users", (users) => setOnlineUsers(Array.isArray(users) ? users : []));
-    
-    return () => {
-      socket.off("receive_private_message");
-      socket.off("receive_group_message");
-      socket.off("online_users");
-    };
-  }, []);
-
-  const joinChat = () => {
-    if (!username.trim()) return alert("Identity required.");
-    localStorage.setItem("chat_username", username.trim());
-    socket.emit("join", username.trim());
-    setJoined(true);
-  };
-
-  const logout = () => {
-    localStorage.removeItem("chat_username");
-    localStorage.removeItem("chat_messages"); // Clear chats on logout
-    setJoined(false);
-    setUsername("");
-    setReceiver("");
-    setMessages([]);
-    window.location.reload();
-  };
-
-  const sendMessage = (type) => {
-    if (!message.trim()) return;
-    const data = { sender: username, receiver: type === "private" ? receiver : null, message, type };
-    if (type === "private" && !receiver) return alert("Select a node first!");
-    socket.emit(type === "private" ? "private_message" : "group_message", data);
-    setMessages((prev) => [...prev, data]);
-    setMessage("");
-  };
-
-
-  if (!joined) {
-    return (
-      <div style={styles.loginPage}>
-        <div style={styles.loginBox}>
-          <h1 style={styles.glitchText}>SOLAR_NET_v2</h1>
-          <p style={styles.loginSub}>NEURAL_LINK_PENDING...</p>
-          <input 
-            style={styles.loginInput} 
-            placeholder="ENTER_USER_ID" 
-            value={username} 
-            onChange={(e) => setUsername(e.target.value)} 
-            onKeyDown={(e) => e.key === "Enter" && joinChat()} 
-          />
-          <button style={styles.loginBtn} onClick={joinChat}>INITIALIZE</button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div style={styles.container}>
-      {/* LEFT SIDEBAR */}
-      <div style={styles.sidebar}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: "20px" }}>
-          <div style={styles.sidebarHeader}>ACTIVE_NODES</div>
-          <button onClick={logout} style={styles.logoutBtn} title="Disconnect Session">LOGOUT</button>
-        </div>
-        
-        <div style={styles.userList}>
-          {onlineUsers.filter(u => u !== username).map((u, i) => (
-            <div 
-              key={i} 
-              onClick={() => setReceiver(u)} 
-              style={{
-                ...styles.nodeItem, 
-                color: receiver === u ? "#00f2ff" : "#64748b", 
-                background: receiver === u ? "rgba(0,242,255,0.1)" : "transparent",
-                borderRight: receiver === u ? "2px solid #00f2ff" : "none"
-              }}
-            >
-              <span style={{...styles.dot, backgroundColor: receiver === u ? "#00f2ff" : "#1e293b"}} /> 
-              {u.toUpperCase()}
-            </div>
-          ))}
-        </div>
-        
-        {/* --- DYNAMIC RADAR UI --- */}
-        <div style={styles.radarContainer}>
-          <div style={styles.radarTitle}>TACTICAL_MAP</div>
-          <div style={styles.radarMap}>
-            <div style={styles.radarGrid} />
-            {chatCores.map(core => (
-              <div key={core.id} title={core.id} style={{
-                position: 'absolute',
-                left: `${50 + (core.pos[0] / 6)}%`, 
-                top: `${50 + (core.pos[2] / 6)}%`,
-                width: '6px', height: '6px',
-                background: core.id === 'global' ? '#ffaa00' : '#00f2ff',
-                borderRadius: '50%',
-                boxShadow: core.id === 'global' ? '0 0 8px #ffaa00' : '0 0 8px #00f2ff',
-                transform: 'translate(-50%, -50%)',
-                zIndex: 2
-              }} />
-            ))}
-            <div style={{
-              position: 'absolute',
-              left: `${50 + (playerPosition.x / 6)}%`,
-              top: `${50 + (playerPosition.z / 6)}%`,
-              width: '8px', height: '8px',
-              background: '#ff0000',
-              borderRadius: '50%',
-              boxShadow: '0 0 10px #ff0000',
-              border: '1px solid white',
-              transform: 'translate(-50%, -50%)',
-              zIndex: 3,
-              transition: 'all 0.1s linear'
-            }} />
-          </div>
-        </div>
-      </div>
-
-      {/* MAIN VIEWPORT */}
-      <div style={styles.viewport}>
-        <div style={styles.topBar}>
-          <div style={styles.logoText}>
-            VIRTUAL_UNIT // <span style={{color: '#00f2ff'}}>{username.toUpperCase()}</span>
-          </div>
-          {receiver && (
-            <div style={styles.targetStatus}>
-              SECURE_LINK_ACTIVE: <span style={{color: '#00f2ff'}}>{receiver.toUpperCase()}</span>
-              <button onClick={() => setReceiver("")} style={styles.clearReceiverBtn}>[X]</button>
-            </div>
-          )}
-        </div>
-
-        <div style={styles.canvasWrapper}>
-          <ThreeChatRoom 
-            messages={messages} 
-            currentUser={username} 
-            onlineUsers={onlineUsers}
-            onPlayerMove={(pos) => setPlayerPosition(pos.clone())}
-            onSelectUser={(targetUser) => setReceiver(targetUser)}
-          />
-        </div>
-
-        <div style={styles.inputArea}>
-          <div style={styles.inputWrapper}>
-            <input 
-              style={styles.mainInput} 
-              placeholder={receiver ? `Send signal to ${receiver}...` : "Broadcast to Global Core..."} 
-              value={message} 
-              onChange={(e) => setMessage(e.target.value)} 
-              onKeyDown={(e) => e.key === "Enter" && sendMessage(receiver ? "private" : "group")} 
-            />
-            <div style={styles.actionGroup}>
-              <button onClick={() => sendMessage("group")} style={{...styles.btnAction, background: "#ff007a"}}>GROUP</button>
-              <button onClick={() => sendMessage("private")} style={{...styles.btnAction, background: "#00f2ff", color: "black"}}>PRIVATE</button>
-            </div>
-          </div>
-        </div>
-
-        <div style={styles.controlsHint}>
-          CLICK TO LOCK MOUSE | WASD TO NAVIGATE
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const styles = {
-  container: { display: "flex", width: "100vw", height: "100vh", background: "#000", overflow: "hidden", fontFamily: "'Courier New', monospace" },
-  sidebar: { width: "260px", background: "#020617", borderRight: "1px solid #1e293b", padding: "20px", zIndex: 100, display: 'flex', flexDirection: 'column' },
-  sidebarHeader: { fontSize: "12px", color: "#475569", letterSpacing: "4px", fontWeight: "bold" },
-  logoutBtn: { background: "transparent", border: "1px solid #ff007a", color: "#ff007a", fontSize: "9px", padding: "4px 8px", cursor: "pointer", borderRadius: "4px" },
-  userList: { flex: 1, overflowY: 'auto' },
-  nodeItem: { padding: "14px 15px", cursor: "pointer", fontSize: "13px", display: "flex", alignItems: "center", transition: "0.3s", marginBottom: "4px", borderRadius: "4px" },
-  dot: { width: "8px", height: "8px", borderRadius: "50%", marginRight: "12px" },
-  radarContainer: { marginTop: '20px', paddingTop: '20px', borderTop: '1px solid #1e293b' },
-  radarTitle: { fontSize: "10px", color: "#475569", marginBottom: "15px", textAlign: 'center', letterSpacing: '2px' },
-  radarMap: { position: 'relative', width: '100%', height: '180px', background: '#010409', borderRadius: '12px', border: '1px solid #1e293b', overflow: 'hidden', boxShadow: 'inset 0 0 20px rgba(0,0,0,0.8)' },
-  radarGrid: { position: 'absolute', width: '100%', height: '100%', backgroundImage: 'linear-gradient(#1e293b 1px, transparent 1px), linear-gradient(90deg, #1e293b 1px, transparent 1px)', backgroundSize: '20px 20px', opacity: 0.2 },
-  viewport: { flex: 1, position: "relative", background: "#000" },
-  canvasWrapper: { position: "absolute", top: 0, left: 0, width: "100%", height: "100%", zIndex: 1 },
-  topBar: { position: "absolute", top: 30, left: 30, zIndex: 10, pointerEvents: "none" },
-  logoText: { color: "white", fontSize: "18px", fontWeight: "bold", textShadow: "0 0 10px rgba(0,242,255,0.5)" },
-  targetStatus: { marginTop: "10px", color: "#ff007a", fontSize: "11px", letterSpacing: "1px", pointerEvents: "auto", display: "flex", alignItems: "center", gap: "8px" },
-  clearReceiverBtn: { background: "none", border: "none", color: "#ff007a", cursor: "pointer", fontWeight: "bold" },
-  inputArea: { position: "absolute", bottom: 40, width: "100%", display: "flex", justifyContent: "center", zIndex: 100 },
-  inputWrapper: { width: "75%", maxWidth: "900px", background: "rgba(15, 23, 42, 0.9)", backdropFilter: "blur(20px)", padding: "10px 30px", borderRadius: "100px", border: "1px solid rgba(0,242,255,0.3)", display: "flex", alignItems: "center", boxShadow: "0 20px 50px rgba(0,0,0,0.9)" },
-  mainInput: { flex: 1, background: "transparent", border: "none", color: "white", outline: "none", fontSize: "15px" },
-  actionGroup: { display: "flex", gap: "12px", marginLeft: "20px" },
-  btnAction: { border: "none", padding: "12px 24px", borderRadius: "50px", cursor: "pointer", fontWeight: "bold", fontSize: "12px", transition: "0.2s" },
-  controlsHint: { position: 'absolute', top: 30, right: 30, color: 'rgba(255,255,255,0.3)', fontSize: '10px', zIndex: 10 },
-  loginPage: { height: "100vh", width: "100vw", display: "flex", justifyContent: "center", alignItems: "center", background: "#010208" },
-  loginBox: { textAlign: "center", padding: "60px", background: "#0f172a", borderRadius: "32px", border: "1px solid #1e293b", boxShadow: "0 0 60px rgba(0,242,255,0.15)" },
-  glitchText: { color: "#00f2ff", fontSize: "32px", letterSpacing: "10px", marginBottom: "10px", textShadow: "0 0 20px #00f2ff" },
-  loginSub: { color: '#475569', fontSize: '11px', letterSpacing: '3px', marginBottom: '30px' },
-  loginInput: { padding: "18px", width: "320px", background: "#020617", border: "1px solid #1e293b", color: "#00f2ff", marginBottom: "30px", borderRadius: "12px", outline: "none", textAlign: "center", fontSize: "18px" },
-  loginBtn: { width: "100%", padding: "18px", background: "#00f2ff", border: "none", fontWeight: "bold", cursor: "pointer", borderRadius: "12px", fontSize: "16px", letterSpacing: "2px" }
-};
-
-export default Chat;

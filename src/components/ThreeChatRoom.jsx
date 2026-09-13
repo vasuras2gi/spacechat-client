@@ -1,3 +1,284 @@
+import React, { useRef, useState, useEffect, useMemo } from "react";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
+import { 
+  Text, Float, Billboard, Sphere, Stars, 
+  PerspectiveCamera, PointerLockControls 
+} from "@react-three/drei";
+import { EffectComposer, Bloom } from "@react-three/postprocessing";
+import * as THREE from "three";
+
+// --- 1. SIGNAL BEAM (Animation Effect from Camera) ---
+function SignalBeam({ start, end, color }) {
+  const ref = useRef();
+  const [opacity, setOpacity] = useState(1);
+
+  useFrame((state, delta) => {
+    if (opacity > 0) setOpacity((prev) => prev - delta * 1.2);
+  });
+
+  if (opacity <= 0) return null;
+
+  const points = [new THREE.Vector3(...start), new THREE.Vector3(...end)];
+  const lineGeometry = new THREE.BufferGeometry().setFromPoints(points);
+
+  return (
+    <line geometry={lineGeometry}>
+      <lineBasicMaterial color={color} transparent opacity={opacity} linewidth={2} />
+    </line>
+  );
+}
+
+// --- 2. MESSAGE NODE (Dual-Sided & Anti-Overlap) ---
+function MessageNode({ msg, index, total, coreScale, currentUser }) {
+  const isMe = msg.sender.toLowerCase() === currentUser.toLowerCase();
+  
+  const orbitRadius = (coreScale * 2.2) + 1.8;
+  const side = isMe ? 1 : -1; 
+  
+  const angle = index * 0.4; 
+  const x = (Math.cos(angle) * 0.5) + (side * orbitRadius);
+  const z = Math.sin(angle) * 1.5;
+  const y = index * 0.8; 
+
+  const userColor = isMe ? "#00f2ff" : "#ff007a";
+  const opacity = Math.max(0.3, 1 - (total - 1 - index) * 0.12);
+
+  return (
+    <group position={[x, y, z]}>
+      <Billboard>
+        <Float speed={2} rotationIntensity={0.1} floatIntensity={0.4}>
+          
+          <Text 
+            position={[isMe ? 0.3 : -0.3, 0, 0]} 
+            fontSize={0.28} 
+            color="white" 
+            anchorX={isMe ? "left" : "right"} 
+            fillOpacity={opacity}
+            maxWidth={3.5}
+            outlineWidth={0.015}
+            outlineColor={userColor}
+          >
+            {`${msg.sender.toUpperCase()}: ${msg.message}`}
+          </Text>
+          
+          <Sphere args={[0.08, 16, 16]} position={[0, 0, -0.05]}> 
+            <meshStandardMaterial 
+              color={userColor} 
+              emissive={userColor} 
+              emissiveIntensity={opacity * 8} 
+              transparent 
+              opacity={opacity} 
+            />
+          </Sphere>
+
+          <mesh position={[isMe ? 1.8 : -1.8, 0, -0.1]}>
+            <planeGeometry args={[3.6, 0.6]} />
+            <meshBasicMaterial color="#000" transparent opacity={opacity * 0.5} />
+          </mesh>
+
+        </Float>
+      </Billboard>
+    </group>
+  );
+}
+
+// --- 3. CHAT SYSTEM ---
+function ChatSystem({ coreId, position, messages, currentUser }) {
+  const relevantMessages = messages.filter(m => {
+    const msgId = m.type === "group" ? "global" : [m.sender, m.receiver].sort().join("-");
+    return msgId === coreId;
+  });
+
+  const activityScale = Math.min(1 + relevantMessages.length * 0.2, 4);
+  const coreColor = coreId === "global" ? "#ffcc33" : "#00f2ff";
+
+  return (
+    <group position={position}>
+      <mesh scale={activityScale}>
+        <sphereGeometry args={[1.5, 32, 32]} />
+        <meshStandardMaterial color={coreColor} emissive={coreColor} emissiveIntensity={activityScale * 2} />
+        <pointLight intensity={15} color={coreColor} distance={60} />
+      </mesh>
+
+      <Billboard position={[0, (relevantMessages.length * 0.8) + activityScale + 2.5, 0]}>
+        <Text fontSize={0.8} color="white" outlineWidth={0.04} outlineColor={coreColor}>
+          {coreId === "global" ? "GLOBAL_CORE" : `SECURE_LINK: ${coreId.split('-').find(n => n !== currentUser)?.toUpperCase()}`}
+        </Text>
+      </Billboard>
+
+      {relevantMessages.map((msg, i) => (
+        <MessageNode 
+          key={i} 
+          msg={msg} 
+          index={i} 
+          total={relevantMessages.length} 
+          coreScale={activityScale}
+          currentUser={currentUser}
+        />
+      ))}
+    </group>
+  );
+}
+
+// --- 4. MOBILE CAMERA CONTROLS ---
+function MobileLookControls() {
+  const { camera, gl } = useThree();
+  
+  useEffect(() => {
+    camera.rotation.order = "YXZ"; 
+    let startX, startY;
+    
+    const onTouchStart = (e) => {
+      startX = e.touches[0].pageX;
+      startY = e.touches[0].pageY;
+    };
+    
+    const onTouchMove = (e) => {
+      const deltaX = e.touches[0].pageX - startX;
+      const deltaY = e.touches[0].pageY - startY;
+      startX = e.touches[0].pageX;
+      startY = e.touches[0].pageY;
+      
+      camera.rotation.y -= deltaX * 0.005;
+      camera.rotation.x -= deltaY * 0.005;
+      camera.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, camera.rotation.x));
+    };
+
+    const canvas = gl.domElement;
+    canvas.addEventListener('touchstart', onTouchStart, { passive: false });
+    canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+    
+    return () => {
+      canvas.removeEventListener('touchstart', onTouchStart);
+      canvas.removeEventListener('touchmove', onTouchMove);
+    };
+  }, [camera, gl.domElement]);
+
+  return null;
+}
+
+// --- 5. FPS PLAYER (With Movement Sync & Mobile Fallback) ---
+function FPSPlayer({ onMove, isMobile }) {
+  const { camera } = useThree();
+  const speed = 0.5;
+  const keys = useRef({});
+
+  useEffect(() => {
+    const handleDown = (e) => (keys.current[e.code] = true);
+    const handleUp = (e) => (keys.current[e.code] = false);
+    window.addEventListener("keydown", handleDown);
+    window.addEventListener("keyup", handleUp);
+    return () => {
+      window.removeEventListener("keydown", handleDown);
+      window.removeEventListener("keyup", handleUp);
+    };
+  }, []);
+
+  useFrame(() => {
+    const direction = new THREE.Vector3();
+    
+    // Check hardware keys first, fallback to the global mobile D-pad object
+    const w = keys.current["KeyW"] || window.mobileKeys?.KeyW;
+    const s = keys.current["KeyS"] || window.mobileKeys?.KeyS;
+    const a = keys.current["KeyA"] || window.mobileKeys?.KeyA;
+    const d = keys.current["KeyD"] || window.mobileKeys?.KeyD;
+
+    const frontVector = new THREE.Vector3(0, 0, Number(!!s) - Number(!!w));
+    const sideVector = new THREE.Vector3(Number(!!a) - Number(!!d), 0, 0);
+
+    direction.subVectors(frontVector, sideVector).normalize().multiplyScalar(speed).applyQuaternion(camera.quaternion);
+    camera.position.add(direction);
+    
+    if (onMove) onMove(camera.position);
+  });
+
+  return isMobile ? <MobileLookControls /> : <PointerLockControls />;
+}
+
+// --- MAIN ROOM ---
+export default function ThreeChatRoom({ messages = [], currentUser = "", onlineUsers = [], onPlayerMove, isMobile }) {
+  const [activeSignals, setActiveSignals] = useState([]);
+  const lastMsgCount = useRef(messages.length);
+
+  const chatCores = useMemo(() => {
+    const cores = [{ id: "global", pos: [0, 0, 0] }];
+    if (Array.isArray(onlineUsers)) {
+      const filtered = onlineUsers.filter(u => u !== currentUser);
+      filtered.forEach((user, i) => {
+        const id = [currentUser, user].sort().join("-");
+        const angle = (i / Math.max(1, filtered.length)) * Math.PI * 2;
+        const radius = 60;
+        cores.push({ id, pos: [Math.cos(angle) * radius, 0, Math.sin(angle) * radius] });
+      });
+    }
+    return cores;
+  }, [onlineUsers, currentUser]);
+
+  // Effect to trigger "Signal Beam" animation
+  useEffect(() => {
+    if (messages.length > lastMsgCount.current) {
+      const newMsg = messages[messages.length - 1];
+      if (newMsg.sender.toLowerCase() === currentUser.toLowerCase()) {
+        const targetCoreId = newMsg.type === "group" ? "global" : [newMsg.sender, newMsg.receiver].sort().join("-");
+        const targetPos = chatCores.find(c => c.id === targetCoreId)?.pos || [0, 0, 0];
+        
+        // Signal trigger logic
+        const signalId = Date.now();
+        setActiveSignals(prev => [...prev, { id: signalId, end: targetPos }]);
+        setTimeout(() => setActiveSignals(prev => prev.filter(s => s.id !== signalId)), 1000);
+      }
+      lastMsgCount.current = messages.length;
+    }
+  }, [messages, currentUser, chatCores]);
+
+  return (
+    <div style={{ width: "100%", height: "100%" }}>
+      <Canvas shadows>
+        <color attach="background" args={["#010208"]} />
+        <PerspectiveCamera makeDefault position={[0, 5, 20]} fov={60} />
+        <Stars radius={300} count={6000} factor={7} fade />
+        <ambientLight intensity={0.3} />
+        
+        <FPSPlayer onMove={onPlayerMove} isMobile={isMobile} />
+
+        {/* Dynamic Signals */}
+        <SceneSignals signals={activeSignals} />
+
+        {chatCores.map((core) => (
+          <ChatSystem 
+            key={core.id} 
+            coreId={core.id} 
+            position={core.pos} 
+            messages={messages} 
+            currentUser={currentUser}
+          />
+        ))}
+
+        <EffectComposer>
+          <Bloom intensity={1.8} luminanceThreshold={0.15} mipmapBlur />
+        </EffectComposer>
+      </Canvas>
+    </div>
+  );
+}
+
+// Helper to get camera position for signals
+function SceneSignals({ signals }) {
+  const { camera } = useThree();
+  return signals.map(sig => (
+    <SignalBeam 
+      key={sig.id} 
+      start={[camera.position.x, camera.position.y - 0.5, camera.position.z]} 
+      end={sig.end} 
+      color="#00f2ff" 
+    />
+  ));
+}
+
+
+
+
+
 // import React, { useRef, useState, useEffect, useMemo } from "react";
 // import { Canvas, useFrame, useThree } from "@react-three/fiber";
 // import { 
@@ -145,239 +426,246 @@
 //   );
 // }
 
-import React, { useRef, useState, useEffect, useMemo } from "react";
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { 
-  Text, Float, Billboard, Sphere, Stars, 
-  PerspectiveCamera, PointerLockControls 
-} from "@react-three/drei";
-import { EffectComposer, Bloom } from "@react-three/postprocessing";
-import * as THREE from "three";
 
-// --- 1. SIGNAL BEAM (Animation Effect from Camera) ---
-function SignalBeam({ start, end, color }) {
-  const ref = useRef();
-  const [opacity, setOpacity] = useState(1);
 
-  useFrame((state, delta) => {
-    if (opacity > 0) setOpacity((prev) => prev - delta * 1.2);
-  });
 
-  if (opacity <= 0) return null;
 
-  const points = [new THREE.Vector3(...start), new THREE.Vector3(...end)];
-  const lineGeometry = new THREE.BufferGeometry().setFromPoints(points);
 
-  return (
-    <line geometry={lineGeometry}>
-      <lineBasicMaterial color={color} transparent opacity={opacity} linewidth={2} />
-    </line>
-  );
-}
 
-// --- 2. MESSAGE NODE (Dual-Sided & Anti-Overlap) ---
-function MessageNode({ msg, index, total, coreScale, currentUser }) {
-  const isMe = msg.sender.toLowerCase() === currentUser.toLowerCase();
+
+// import React, { useRef, useState, useEffect, useMemo } from "react";
+// import { Canvas, useFrame, useThree } from "@react-three/fiber";
+// import { 
+//   Text, Float, Billboard, Sphere, Stars, 
+//   PerspectiveCamera, PointerLockControls 
+// } from "@react-three/drei";
+// import { EffectComposer, Bloom } from "@react-three/postprocessing";
+// import * as THREE from "three";
+
+// // --- 1. SIGNAL BEAM (Animation Effect from Camera) ---
+// function SignalBeam({ start, end, color }) {
+//   const ref = useRef();
+//   const [opacity, setOpacity] = useState(1);
+
+//   useFrame((state, delta) => {
+//     if (opacity > 0) setOpacity((prev) => prev - delta * 1.2);
+//   });
+
+//   if (opacity <= 0) return null;
+
+//   const points = [new THREE.Vector3(...start), new THREE.Vector3(...end)];
+//   const lineGeometry = new THREE.BufferGeometry().setFromPoints(points);
+
+//   return (
+//     <line geometry={lineGeometry}>
+//       <lineBasicMaterial color={color} transparent opacity={opacity} linewidth={2} />
+//     </line>
+//   );
+// }
+
+// // --- 2. MESSAGE NODE (Dual-Sided & Anti-Overlap) ---
+// function MessageNode({ msg, index, total, coreScale, currentUser }) {
+//   const isMe = msg.sender.toLowerCase() === currentUser.toLowerCase();
   
-  const orbitRadius = (coreScale * 2.2) + 1.8;
-  const side = isMe ? 1 : -1; 
+//   const orbitRadius = (coreScale * 2.2) + 1.8;
+//   const side = isMe ? 1 : -1; 
   
-  const angle = index * 0.4; 
-  const x = (Math.cos(angle) * 0.5) + (side * orbitRadius);
-  const z = Math.sin(angle) * 1.5;
-  const y = index * 0.8; 
+//   const angle = index * 0.4; 
+//   const x = (Math.cos(angle) * 0.5) + (side * orbitRadius);
+//   const z = Math.sin(angle) * 1.5;
+//   const y = index * 0.8; 
 
-  const userColor = isMe ? "#00f2ff" : "#ff007a";
-  const opacity = Math.max(0.3, 1 - (total - 1 - index) * 0.12);
+//   const userColor = isMe ? "#00f2ff" : "#ff007a";
+//   const opacity = Math.max(0.3, 1 - (total - 1 - index) * 0.12);
 
-  return (
-    <group position={[x, y, z]}>
-      <Billboard>
-        <Float speed={2} rotationIntensity={0.1} floatIntensity={0.4}>
+//   return (
+//     <group position={[x, y, z]}>
+//       <Billboard>
+//         <Float speed={2} rotationIntensity={0.1} floatIntensity={0.4}>
           
-          {/* 1. TEXT FIX: Anchor aur position adjust kiye taaki sphere se door rahe */}
-          <Text 
-            // Position mein X-offset diya taaki dot ke bagal se start ho
-            position={[isMe ? 0.3 : -0.3, 0, 0]} 
-            fontSize={0.28} 
-            color="white" 
-            anchorX={isMe ? "left" : "right"} // Me = Text starts from left, Others = starts from right
-            fillOpacity={opacity}
-            maxWidth={3.5}
-            outlineWidth={0.015}
-            outlineColor={userColor}
-          >
-            {`${msg.sender.toUpperCase()}: ${msg.message}`}
-          </Text>
+//           {/* 1. TEXT FIX: Anchor aur position adjust kiye taaki sphere se door rahe */}
+//           <Text 
+//             // Position mein X-offset diya taaki dot ke bagal se start ho
+//             position={[isMe ? 0.3 : -0.3, 0, 0]} 
+//             fontSize={0.28} 
+//             color="white" 
+//             anchorX={isMe ? "left" : "right"} // Me = Text starts from left, Others = starts from right
+//             fillOpacity={opacity}
+//             maxWidth={3.5}
+//             outlineWidth={0.015}
+//             outlineColor={userColor}
+//           >
+//             {`${msg.sender.toUpperCase()}: ${msg.message}`}
+//           </Text>
           
-          {/* 2. SPHERE FIX: Depth offset (Z-axis) taaki text ke peeche rahe */}
-          <Sphere args={[0.08, 16, 16]} position={[0, 0, -0.05]}> 
-            <meshStandardMaterial 
-              color={userColor} 
-              emissive={userColor} 
-              emissiveIntensity={opacity * 8} 
-              transparent 
-              opacity={opacity} 
-            />
-          </Sphere>
+//           {/* 2. SPHERE FIX: Depth offset (Z-axis) taaki text ke peeche rahe */}
+//           <Sphere args={[0.08, 16, 16]} position={[0, 0, -0.05]}> 
+//             <meshStandardMaterial 
+//               color={userColor} 
+//               emissive={userColor} 
+//               emissiveIntensity={opacity * 8} 
+//               transparent 
+//               opacity={opacity} 
+//             />
+//           </Sphere>
 
-          {/* Background Plate ko bhi thoda peeche rakha readability ke liye */}
-          <mesh position={[isMe ? 1.8 : -1.8, 0, -0.1]}>
-            <planeGeometry args={[3.6, 0.6]} />
-            <meshBasicMaterial color="#000" transparent opacity={opacity * 0.5} />
-          </mesh>
+//           {/* Background Plate ko bhi thoda peeche rakha readability ke liye */}
+//           <mesh position={[isMe ? 1.8 : -1.8, 0, -0.1]}>
+//             <planeGeometry args={[3.6, 0.6]} />
+//             <meshBasicMaterial color="#000" transparent opacity={opacity * 0.5} />
+//           </mesh>
 
-        </Float>
-      </Billboard>
-    </group>
-  );
-}
+//         </Float>
+//       </Billboard>
+//     </group>
+//   );
+// }
 
-// --- 3. CHAT SYSTEM ---
-function ChatSystem({ coreId, position, messages, currentUser }) {
-  const relevantMessages = messages.filter(m => {
-    const msgId = m.type === "group" ? "global" : [m.sender, m.receiver].sort().join("-");
-    return msgId === coreId;
-  });
+// // --- 3. CHAT SYSTEM ---
+// function ChatSystem({ coreId, position, messages, currentUser }) {
+//   const relevantMessages = messages.filter(m => {
+//     const msgId = m.type === "group" ? "global" : [m.sender, m.receiver].sort().join("-");
+//     return msgId === coreId;
+//   });
 
-  const activityScale = Math.min(1 + relevantMessages.length * 0.2, 4);
-  const coreColor = coreId === "global" ? "#ffcc33" : "#00f2ff";
+//   const activityScale = Math.min(1 + relevantMessages.length * 0.2, 4);
+//   const coreColor = coreId === "global" ? "#ffcc33" : "#00f2ff";
 
-  return (
-    <group position={position}>
-      <mesh scale={activityScale}>
-        <sphereGeometry args={[1.5, 32, 32]} />
-        <meshStandardMaterial color={coreColor} emissive={coreColor} emissiveIntensity={activityScale * 2} />
-        <pointLight intensity={15} color={coreColor} distance={60} />
-      </mesh>
+//   return (
+//     <group position={position}>
+//       <mesh scale={activityScale}>
+//         <sphereGeometry args={[1.5, 32, 32]} />
+//         <meshStandardMaterial color={coreColor} emissive={coreColor} emissiveIntensity={activityScale * 2} />
+//         <pointLight intensity={15} color={coreColor} distance={60} />
+//       </mesh>
 
-      <Billboard position={[0, (relevantMessages.length * 0.8) + activityScale + 2.5, 0]}>
-        <Text fontSize={0.8} color="white" outlineWidth={0.04} outlineColor={coreColor}>
-          {coreId === "global" ? "GLOBAL_CORE" : `SECURE_LINK: ${coreId.split('-').find(n => n !== currentUser)?.toUpperCase()}`}
-        </Text>
-      </Billboard>
+//       <Billboard position={[0, (relevantMessages.length * 0.8) + activityScale + 2.5, 0]}>
+//         <Text fontSize={0.8} color="white" outlineWidth={0.04} outlineColor={coreColor}>
+//           {coreId === "global" ? "GLOBAL_CORE" : `SECURE_LINK: ${coreId.split('-').find(n => n !== currentUser)?.toUpperCase()}`}
+//         </Text>
+//       </Billboard>
 
-      {relevantMessages.map((msg, i) => (
-        <MessageNode 
-          key={i} 
-          msg={msg} 
-          index={i} 
-          total={relevantMessages.length} 
-          coreScale={activityScale}
-          currentUser={currentUser}
-        />
-      ))}
-    </group>
-  );
-}
+//       {relevantMessages.map((msg, i) => (
+//         <MessageNode 
+//           key={i} 
+//           msg={msg} 
+//           index={i} 
+//           total={relevantMessages.length} 
+//           coreScale={activityScale}
+//           currentUser={currentUser}
+//         />
+//       ))}
+//     </group>
+//   );
+// }
 
-// --- 4. FPS PLAYER (With Movement Sync) ---
-function FPSPlayer({ onMove }) {
-  const { camera } = useThree();
-  const speed = 0.5;
-  const keys = useRef({});
+// // --- 4. FPS PLAYER (With Movement Sync) ---
+// function FPSPlayer({ onMove }) {
+//   const { camera } = useThree();
+//   const speed = 0.5;
+//   const keys = useRef({});
 
-  useEffect(() => {
-    const handleDown = (e) => (keys.current[e.code] = true);
-    const handleUp = (e) => (keys.current[e.code] = false);
-    window.addEventListener("keydown", handleDown);
-    window.addEventListener("keyup", handleUp);
-    return () => {
-      window.removeEventListener("keydown", handleDown);
-      window.removeEventListener("keyup", handleUp);
-    };
-  }, []);
+//   useEffect(() => {
+//     const handleDown = (e) => (keys.current[e.code] = true);
+//     const handleUp = (e) => (keys.current[e.code] = false);
+//     window.addEventListener("keydown", handleDown);
+//     window.addEventListener("keyup", handleUp);
+//     return () => {
+//       window.removeEventListener("keydown", handleDown);
+//       window.removeEventListener("keyup", handleUp);
+//     };
+//   }, []);
 
-  useFrame(() => {
-    const direction = new THREE.Vector3();
-    const frontVector = new THREE.Vector3(0, 0, Number(!!keys.current["KeyS"]) - Number(!!keys.current["KeyW"]));
-    const sideVector = new THREE.Vector3(Number(!!keys.current["KeyA"]) - Number(!!keys.current["KeyD"]), 0, 0);
+//   useFrame(() => {
+//     const direction = new THREE.Vector3();
+//     const frontVector = new THREE.Vector3(0, 0, Number(!!keys.current["KeyS"]) - Number(!!keys.current["KeyW"]));
+//     const sideVector = new THREE.Vector3(Number(!!keys.current["KeyA"]) - Number(!!keys.current["KeyD"]), 0, 0);
 
-    direction.subVectors(frontVector, sideVector).normalize().multiplyScalar(speed).applyQuaternion(camera.quaternion);
-    camera.position.add(direction);
+//     direction.subVectors(frontVector, sideVector).normalize().multiplyScalar(speed).applyQuaternion(camera.quaternion);
+//     camera.position.add(direction);
     
-    if (onMove) onMove(camera.position);
-  });
+//     if (onMove) onMove(camera.position);
+//   });
 
-  return <PointerLockControls />;
-}
+//   return <PointerLockControls />;
+// }
 
-// --- MAIN ROOM ---
-export default function ThreeChatRoom({ messages = [], currentUser = "", onlineUsers = [], onPlayerMove }) {
-  const [activeSignals, setActiveSignals] = useState([]);
-  const lastMsgCount = useRef(messages.length);
+// // --- MAIN ROOM ---
+// export default function ThreeChatRoom({ messages = [], currentUser = "", onlineUsers = [], onPlayerMove }) {
+//   const [activeSignals, setActiveSignals] = useState([]);
+//   const lastMsgCount = useRef(messages.length);
 
-  const chatCores = useMemo(() => {
-    const cores = [{ id: "global", pos: [0, 0, 0] }];
-    if (Array.isArray(onlineUsers)) {
-      const filtered = onlineUsers.filter(u => u !== currentUser);
-      filtered.forEach((user, i) => {
-        const id = [currentUser, user].sort().join("-");
-        const angle = (i / Math.max(1, filtered.length)) * Math.PI * 2;
-        const radius = 60;
-        cores.push({ id, pos: [Math.cos(angle) * radius, 0, Math.sin(angle) * radius] });
-      });
-    }
-    return cores;
-  }, [onlineUsers, currentUser]);
+//   const chatCores = useMemo(() => {
+//     const cores = [{ id: "global", pos: [0, 0, 0] }];
+//     if (Array.isArray(onlineUsers)) {
+//       const filtered = onlineUsers.filter(u => u !== currentUser);
+//       filtered.forEach((user, i) => {
+//         const id = [currentUser, user].sort().join("-");
+//         const angle = (i / Math.max(1, filtered.length)) * Math.PI * 2;
+//         const radius = 60;
+//         cores.push({ id, pos: [Math.cos(angle) * radius, 0, Math.sin(angle) * radius] });
+//       });
+//     }
+//     return cores;
+//   }, [onlineUsers, currentUser]);
 
-  // Effect to trigger "Signal Beam" animation
-  useEffect(() => {
-    if (messages.length > lastMsgCount.current) {
-      const newMsg = messages[messages.length - 1];
-      if (newMsg.sender.toLowerCase() === currentUser.toLowerCase()) {
-        const targetCoreId = newMsg.type === "group" ? "global" : [newMsg.sender, newMsg.receiver].sort().join("-");
-        const targetPos = chatCores.find(c => c.id === targetCoreId)?.pos || [0, 0, 0];
+//   // Effect to trigger "Signal Beam" animation
+//   useEffect(() => {
+//     if (messages.length > lastMsgCount.current) {
+//       const newMsg = messages[messages.length - 1];
+//       if (newMsg.sender.toLowerCase() === currentUser.toLowerCase()) {
+//         const targetCoreId = newMsg.type === "group" ? "global" : [newMsg.sender, newMsg.receiver].sort().join("-");
+//         const targetPos = chatCores.find(c => c.id === targetCoreId)?.pos || [0, 0, 0];
         
-        // Signal trigger logic
-        const signalId = Date.now();
-        setActiveSignals(prev => [...prev, { id: signalId, end: targetPos }]);
-        setTimeout(() => setActiveSignals(prev => prev.filter(s => s.id !== signalId)), 1000);
-      }
-      lastMsgCount.current = messages.length;
-    }
-  }, [messages, currentUser, chatCores]);
+//         // Signal trigger logic
+//         const signalId = Date.now();
+//         setActiveSignals(prev => [...prev, { id: signalId, end: targetPos }]);
+//         setTimeout(() => setActiveSignals(prev => prev.filter(s => s.id !== signalId)), 1000);
+//       }
+//       lastMsgCount.current = messages.length;
+//     }
+//   }, [messages, currentUser, chatCores]);
 
-  return (
-    <div style={{ width: "100%", height: "100%" }}>
-      <Canvas shadows>
-        <color attach="background" args={["#010208"]} />
-        <PerspectiveCamera makeDefault position={[0, 5, 20]} fov={60} />
-        <Stars radius={300} count={6000} factor={7} fade />
-        <ambientLight intensity={0.3} />
+//   return (
+//     <div style={{ width: "100%", height: "100%" }}>
+//       <Canvas shadows>
+//         <color attach="background" args={["#010208"]} />
+//         <PerspectiveCamera makeDefault position={[0, 5, 20]} fov={60} />
+//         <Stars radius={300} count={6000} factor={7} fade />
+//         <ambientLight intensity={0.3} />
         
-        <FPSPlayer onMove={onPlayerMove} />
+//         <FPSPlayer onMove={onPlayerMove} />
 
-        {/* Dynamic Signals */}
-        <SceneSignals signals={activeSignals} />
+//         {/* Dynamic Signals */}
+//         <SceneSignals signals={activeSignals} />
 
-        {chatCores.map((core) => (
-          <ChatSystem 
-            key={core.id} 
-            coreId={core.id} 
-            position={core.pos} 
-            messages={messages} 
-            currentUser={currentUser}
-          />
-        ))}
+//         {chatCores.map((core) => (
+//           <ChatSystem 
+//             key={core.id} 
+//             coreId={core.id} 
+//             position={core.pos} 
+//             messages={messages} 
+//             currentUser={currentUser}
+//           />
+//         ))}
 
-        <EffectComposer>
-          <Bloom intensity={1.8} luminanceThreshold={0.15} mipmapBlur />
-        </EffectComposer>
-      </Canvas>
-    </div>
-  );
-}
+//         <EffectComposer>
+//           <Bloom intensity={1.8} luminanceThreshold={0.15} mipmapBlur />
+//         </EffectComposer>
+//       </Canvas>
+//     </div>
+//   );
+// }
 
-// Helper to get camera position for signals
-function SceneSignals({ signals }) {
-  const { camera } = useThree();
-  return signals.map(sig => (
-    <SignalBeam 
-      key={sig.id} 
-      start={[camera.position.x, camera.position.y - 0.5, camera.position.z]} 
-      end={sig.end} 
-      color="#00f2ff" 
-    />
-  ));
-}
+// // Helper to get camera position for signals
+// function SceneSignals({ signals }) {
+//   const { camera } = useThree();
+//   return signals.map(sig => (
+//     <SignalBeam 
+//       key={sig.id} 
+//       start={[camera.position.x, camera.position.y - 0.5, camera.position.z]} 
+//       end={sig.end} 
+//       color="#00f2ff" 
+//     />
+//   ));
+// }
