@@ -154,23 +154,50 @@ import ThreeChatRoom from "../components/ThreeChatRoom";
 const socket = io("https://spcaechat-server.onrender.com");
 
 function Chat() {
-  // Initialize username and joined state from localStorage if available
+  // 1. Initialize username from localStorage
   const [username, setUsername] = useState(() => localStorage.getItem("chat_username") || "");
   const [joined, setJoined] = useState(() => !!localStorage.getItem("chat_username"));
   const [receiver, setReceiver] = useState("");
   const [message, setMessage] = useState("");
-  const [messages, setMessages] = useState([]);
+  
+  // 2. Initialize messages from localStorage so they don't disappear on reload
+  const [messages, setMessages] = useState(() => {
+    const savedMessages = localStorage.getItem("chat_messages");
+    return savedMessages ? JSON.parse(savedMessages) : [];
+  });
   const [onlineUsers, setOnlineUsers] = useState([]);
   
-  // Track player position for the Radar Red Dot
   const [playerPosition, setPlayerPosition] = useState(new THREE.Vector3(0, 0, 10));
 
-  // --- AUTO RE-JOIN ON RELOAD ---
+  // --- SAVE MESSAGES ON CHANGE ---
+  useEffect(() => {
+    if (messages.length > 0) {
+      localStorage.setItem("chat_messages", JSON.stringify(messages));
+    }
+  }, [messages]);
+
+  // --- AUTO RE-JOIN ON CONNECTION ---
   useEffect(() => {
     const savedUser = localStorage.getItem("chat_username");
-    if (savedUser) {
-      socket.emit("join", savedUser);
+    
+    // Function to re-register user once socket is securely connected
+    const handleConnect = () => {
+      if (savedUser) {
+        socket.emit("join", savedUser);
+      }
+    };
+
+    // If socket is already connected when component mounts
+    if (socket.connected) {
+      handleConnect();
     }
+
+    // Listen for connection events (handles initial connect and reconnections)
+    socket.on("connect", handleConnect);
+
+    return () => {
+      socket.off("connect", handleConnect);
+    };
   }, []);
 
   // --- CORE POSITION LOGIC ---
@@ -206,6 +233,7 @@ function Chat() {
 
   const logout = () => {
     localStorage.removeItem("chat_username");
+    localStorage.removeItem("chat_messages"); // Clear chats on logout
     setJoined(false);
     setUsername("");
     setReceiver("");
@@ -221,6 +249,7 @@ function Chat() {
     setMessages((prev) => [...prev, data]);
     setMessage("");
   };
+
 
   if (!joined) {
     return (
