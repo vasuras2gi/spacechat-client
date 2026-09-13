@@ -152,7 +152,8 @@ import { io } from "socket.io-client";
 import * as THREE from "three";
 import ThreeChatRoom from "../components/ThreeChatRoom";
 
-const socket = io("http://localhost:5000");
+// const socket = io("http://localhost:5000");
+const socket = io("https://spcaechat-server.onrender.com");
 
 function Chat() {
   const [username, setUsername] = useState("");
@@ -359,7 +360,7 @@ const styles = {
   actionGroup: { display: "flex", gap: "12px", marginLeft: "20px" },
   btnAction: { border: "none", padding: "12px 24px", borderRadius: "50px", cursor: "pointer", fontWeight: "bold", fontSize: "12px", transition: "0.2s" },
   controlsHint: { position: 'absolute', top: 30, right: 30, color: 'rgba(255,255,255,0.3)', fontSize: '10px', zIndex: 10 },
-  loginPage: { height: "100vh", display: "flex", justifyContent: "center", alignItems: "center", background: "#010208" },
+  loginPage: { height: "100vh",width:"100vw", display: "flex", justifyContent: "center", alignItems: "center", background: "#010208" },
   loginBox: { textAlign: "center", padding: "60px", background: "#0f172a", borderRadius: "32px", border: "1px solid #1e293b", boxShadow: "0 0 60px rgba(0,242,255,0.15)" },
   glitchText: { color: "#00f2ff", fontSize: "32px", letterSpacing: "10px", marginBottom: "10px", textShadow: "0 0 20px #00f2ff" },
   loginSub: { color: '#475569', fontSize: '11px', letterSpacing: '3px', marginBottom: '30px' },
