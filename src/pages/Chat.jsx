@@ -146,18 +146,17 @@
 // };
 
 // export default Chat;
-
 import React, { useState, useEffect, useMemo } from "react";
 import { io } from "socket.io-client";
 import * as THREE from "three";
 import ThreeChatRoom from "../components/ThreeChatRoom";
 
-// const socket = io("http://localhost:5000");
 const socket = io("https://spcaechat-server.onrender.com");
 
 function Chat() {
-  const [username, setUsername] = useState("");
-  const [joined, setJoined] = useState(false);
+  // Initialize username and joined state from localStorage if available
+  const [username, setUsername] = useState(() => localStorage.getItem("chat_username") || "");
+  const [joined, setJoined] = useState(() => !!localStorage.getItem("chat_username"));
   const [receiver, setReceiver] = useState("");
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState([]);
@@ -166,13 +165,20 @@ function Chat() {
   // Track player position for the Radar Red Dot
   const [playerPosition, setPlayerPosition] = useState(new THREE.Vector3(0, 0, 10));
 
+  // --- AUTO RE-JOIN ON RELOAD ---
+  useEffect(() => {
+    const savedUser = localStorage.getItem("chat_username");
+    if (savedUser) {
+      socket.emit("join", savedUser);
+    }
+  }, []);
+
   // --- CORE POSITION LOGIC ---
   const chatCores = useMemo(() => {
     const cores = [{ id: "global", pos: [0, 0, 0] }];
     if (Array.isArray(onlineUsers)) {
       onlineUsers.filter(u => u !== username).forEach((user, i) => {
         const id = [username, user].sort().join("-");
-        // Consistency: 50 units gap for a spacious feel
         cores.push({ id, pos: [(i + 1) * 50, 0, (i + 1) * 30] });
       });
     }
@@ -193,8 +199,18 @@ function Chat() {
 
   const joinChat = () => {
     if (!username.trim()) return alert("Identity required.");
-    socket.emit("join", username);
+    localStorage.setItem("chat_username", username.trim());
+    socket.emit("join", username.trim());
     setJoined(true);
+  };
+
+  const logout = () => {
+    localStorage.removeItem("chat_username");
+    setJoined(false);
+    setUsername("");
+    setReceiver("");
+    setMessages([]);
+    window.location.reload();
   };
 
   const sendMessage = (type) => {
@@ -229,7 +245,11 @@ function Chat() {
     <div style={styles.container}>
       {/* LEFT SIDEBAR */}
       <div style={styles.sidebar}>
-        <div style={styles.sidebarHeader}>ACTIVE_NODES</div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: "20px" }}>
+          <div style={styles.sidebarHeader}>ACTIVE_NODES</div>
+          <button onClick={logout} style={styles.logoutBtn} title="Disconnect Session">LOGOUT</button>
+        </div>
+        
         <div style={styles.userList}>
           {onlineUsers.filter(u => u !== username).map((u, i) => (
             <div 
@@ -252,10 +272,7 @@ function Chat() {
         <div style={styles.radarContainer}>
           <div style={styles.radarTitle}>TACTICAL_MAP</div>
           <div style={styles.radarMap}>
-            {/* Background Grid Lines */}
             <div style={styles.radarGrid} />
-            
-            {/* Core Dots */}
             {chatCores.map(core => (
               <div key={core.id} title={core.id} style={{
                 position: 'absolute',
@@ -269,8 +286,6 @@ function Chat() {
                 zIndex: 2
               }} />
             ))}
-            
-            {/* RED DOT (Player Position) */}
             <div style={{
               position: 'absolute',
               left: `${50 + (playerPosition.x / 6)}%`,
@@ -290,7 +305,6 @@ function Chat() {
 
       {/* MAIN VIEWPORT */}
       <div style={styles.viewport}>
-        {/* HUD - Top Labels */}
         <div style={styles.topBar}>
           <div style={styles.logoText}>
             VIRTUAL_UNIT // <span style={{color: '#00f2ff'}}>{username.toUpperCase()}</span>
@@ -298,21 +312,21 @@ function Chat() {
           {receiver && (
             <div style={styles.targetStatus}>
               SECURE_LINK_ACTIVE: <span style={{color: '#00f2ff'}}>{receiver.toUpperCase()}</span>
+              <button onClick={() => setReceiver("")} style={styles.clearReceiverBtn}>[X]</button>
             </div>
           )}
         </div>
 
-        {/* 3D CANVAS */}
         <div style={styles.canvasWrapper}>
           <ThreeChatRoom 
             messages={messages} 
             currentUser={username} 
             onlineUsers={onlineUsers}
             onPlayerMove={(pos) => setPlayerPosition(pos.clone())}
+            onSelectUser={(targetUser) => setReceiver(targetUser)}
           />
         </div>
 
-        {/* FLOATING INPUT BAR */}
         <div style={styles.inputArea}>
           <div style={styles.inputWrapper}>
             <input 
@@ -329,7 +343,6 @@ function Chat() {
           </div>
         </div>
 
-        {/* CONTROLS HELPER */}
         <div style={styles.controlsHint}>
           CLICK TO LOCK MOUSE | WASD TO NAVIGATE
         </div>
@@ -341,7 +354,8 @@ function Chat() {
 const styles = {
   container: { display: "flex", width: "100vw", height: "100vh", background: "#000", overflow: "hidden", fontFamily: "'Courier New', monospace" },
   sidebar: { width: "260px", background: "#020617", borderRight: "1px solid #1e293b", padding: "20px", zIndex: 100, display: 'flex', flexDirection: 'column' },
-  sidebarHeader: { fontSize: "12px", color: "#475569", letterSpacing: "4px", marginBottom: "30px", fontWeight: "bold" },
+  sidebarHeader: { fontSize: "12px", color: "#475569", letterSpacing: "4px", fontWeight: "bold" },
+  logoutBtn: { background: "transparent", border: "1px solid #ff007a", color: "#ff007a", fontSize: "9px", padding: "4px 8px", cursor: "pointer", borderRadius: "4px" },
   userList: { flex: 1, overflowY: 'auto' },
   nodeItem: { padding: "14px 15px", cursor: "pointer", fontSize: "13px", display: "flex", alignItems: "center", transition: "0.3s", marginBottom: "4px", borderRadius: "4px" },
   dot: { width: "8px", height: "8px", borderRadius: "50%", marginRight: "12px" },
@@ -353,14 +367,15 @@ const styles = {
   canvasWrapper: { position: "absolute", top: 0, left: 0, width: "100%", height: "100%", zIndex: 1 },
   topBar: { position: "absolute", top: 30, left: 30, zIndex: 10, pointerEvents: "none" },
   logoText: { color: "white", fontSize: "18px", fontWeight: "bold", textShadow: "0 0 10px rgba(0,242,255,0.5)" },
-  targetStatus: { marginTop: "10px", color: "#ff007a", fontSize: "11px", letterSpacing: "1px" },
+  targetStatus: { marginTop: "10px", color: "#ff007a", fontSize: "11px", letterSpacing: "1px", pointerEvents: "auto", display: "flex", alignItems: "center", gap: "8px" },
+  clearReceiverBtn: { background: "none", border: "none", color: "#ff007a", cursor: "pointer", fontWeight: "bold" },
   inputArea: { position: "absolute", bottom: 40, width: "100%", display: "flex", justifyContent: "center", zIndex: 100 },
   inputWrapper: { width: "75%", maxWidth: "900px", background: "rgba(15, 23, 42, 0.9)", backdropFilter: "blur(20px)", padding: "10px 30px", borderRadius: "100px", border: "1px solid rgba(0,242,255,0.3)", display: "flex", alignItems: "center", boxShadow: "0 20px 50px rgba(0,0,0,0.9)" },
   mainInput: { flex: 1, background: "transparent", border: "none", color: "white", outline: "none", fontSize: "15px" },
   actionGroup: { display: "flex", gap: "12px", marginLeft: "20px" },
   btnAction: { border: "none", padding: "12px 24px", borderRadius: "50px", cursor: "pointer", fontWeight: "bold", fontSize: "12px", transition: "0.2s" },
   controlsHint: { position: 'absolute', top: 30, right: 30, color: 'rgba(255,255,255,0.3)', fontSize: '10px', zIndex: 10 },
-  loginPage: { height: "100vh",width:"100vw", display: "flex", justifyContent: "center", alignItems: "center", background: "#010208" },
+  loginPage: { height: "100vh", width: "100vw", display: "flex", justifyContent: "center", alignItems: "center", background: "#010208" },
   loginBox: { textAlign: "center", padding: "60px", background: "#0f172a", borderRadius: "32px", border: "1px solid #1e293b", boxShadow: "0 0 60px rgba(0,242,255,0.15)" },
   glitchText: { color: "#00f2ff", fontSize: "32px", letterSpacing: "10px", marginBottom: "10px", textShadow: "0 0 20px #00f2ff" },
   loginSub: { color: '#475569', fontSize: '11px', letterSpacing: '3px', marginBottom: '30px' },
